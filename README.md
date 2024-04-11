@@ -27,15 +27,10 @@ python examples/scripts/dpo.py \
     --lora_alpha=16
 ```
 
-It was able to run successfully, but had "CUDA out of memory" error with a 12GB GPU.
-
-As next steps, we can update the code in dpo.py or the arguments to use a different dataset and model for our project.
+It was able to run successfully. As next steps, we can update the code in dpo.py or the arguments to use a different dataset and model for our project.
 
 
 
-<div style="text-align: center">
-<img src="https://huggingface.co/datasets/trl-internal-testing/example-images/resolve/main/images/trl_banner_dark.png">
-</div>
 
 # TRL - Transformer Reinforcement Learning
 > Full stack library to fine-tune and align large language models.
