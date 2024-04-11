@@ -1,3 +1,38 @@
+## DPO training
+
+Source: https://huggingface.co/docs/trl/main/en/dpo_trainer
+
+I tried running examples/scripts/dpo.py with:
+
+```
+pip install -r requirements.txt
+
+python examples/scripts/dpo.py \
+    --dataset_name=trl-internal-testing/hh-rlhf-trl-style \
+    --model_name_or_path=gpt2 \
+    --per_device_train_batch_size 4 \
+    --learning_rate 1e-3 \
+    --gradient_accumulation_steps 1 \
+    --logging_steps 10 \
+    --eval_steps 500 \
+    --output_dir="dpo_anthropic_hh" \
+    --optim rmsprop \
+    --warmup_steps 150 \
+    --report_to wandb \
+    --bf16 \
+    --logging_first_step \
+    --no_remove_unused_columns \
+    --use_peft \
+    --lora_r=16 \
+    --lora_alpha=16
+```
+
+It was able to run successfully, but had "CUDA out of memory" error with a 12GB GPU.
+
+As next steps, we can update the code in dpo.py or the arguments to use a different dataset and model for our project.
+
+
+
 <div style="text-align: center">
 <img src="https://huggingface.co/datasets/trl-internal-testing/example-images/resolve/main/images/trl_banner_dark.png">
 </div>
