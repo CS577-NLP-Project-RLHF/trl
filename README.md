@@ -43,7 +43,7 @@ OSError: You are trying to access a gated repo.
 Make sure to have access to it at https://huggingface.co/meta-llama/Llama-2-7b-hf.
 ```
 
-Instead of using meta-llama/Llama-2-7b-hf, I found a smaller llama2 model: https://huggingface.co/ahxt/llama2_xs_460M_experimental, along with a llama2 model that doesn't need access request: https://huggingface.co/openlm-research/open_llama_3b_v2
+Instead of using meta-llama/Llama-2-7b-hf, I found a smaller llama2 model: https://huggingface.co/ahxt/llama2_xs_460M_experimental, along with a llama2 model that doesn't need access request: https://huggingface.co/openlm-research/open_llama_3b_v2 and https://huggingface.co/openlm-research/open_llama_7b_v2
 
 I was able to run dpo_llama2.py with:
 
