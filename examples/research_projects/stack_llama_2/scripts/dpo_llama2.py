@@ -12,6 +12,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, HfArgumentParser, 
 from trl import DPOTrainer
 
 
+#model_name = 'meta-llama/Llama-2-7b-hf'
+model_name = 'ahxt/llama2_xs_460M_experimental'
+#model_name = 'openlm-research/open_llama_3b_v2'
+
+
 # Define and parse arguments.
 @dataclass
 class ScriptArguments:
@@ -159,7 +164,7 @@ if __name__ == "__main__":
             name for name, buffer in model.named_buffers() if buffer.dtype == torch.bool
         ]
 
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-hf")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
 
     # 2. Load the Stack-exchange paired dataset
