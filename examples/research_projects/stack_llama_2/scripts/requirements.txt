@@ -2,6 +2,6 @@ transformers
 trl
 peft
 accelerate
-datasets
+datasets==2.18.0
 bitsandbytes
 wandb
