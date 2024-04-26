@@ -37,7 +37,7 @@ class ScriptArguments:
     The name of the Casual LM model we wish to fine with PPO
     """
 
-    model_name: Optional[str] = field(default="/root/llama/llama-2-7b-hf", metadata={"help": "the model name"}) # "huggyllama/llama-7b"
+    model_name: Optional[str] = field(default="meta-llama/Llama-2-7b-hf", metadata={"help": "the model name"}) # "huggyllama/llama-7b" "/root/llama/llama-2-7b-hf"
     dataset_name: Optional[str] = field(default="lvwerra/stack-exchange-paired", metadata={"help": "the dataset name"}) # "Anthropic/hh-rlhf"
     rm_adapter: Optional[str] = field(
         default="trl-lib/llama-7b-hh-rm-adapter", metadata={"help": "the rm adapter name"}
@@ -58,7 +58,7 @@ script_args = parser.parse_args_into_dataclasses()[0]
 
 
 def create_and_prepare_dataset(tokenizer):
-    dataset = load_dataset(script_args.dataset_name, split="train[:1000]")
+    dataset = load_dataset(script_args.dataset_name, split="train[:10000]")
 
     input_size = LengthSampler(input_min_text_length, input_max_text_length)
 
@@ -93,9 +93,11 @@ model = AutoModelForCausalLMWithValueHead.from_pretrained(
     #reward_adapter=script_args.rm_adapter,
     use_safetensors=script_args.use_safetensors,
 )
-tokenizer = AutoTokenizer.from_pretrained(script_args.model_name)
+tokenizer = AutoTokenizer.from_pretrained(script_args.model_name, model_max_length=1024, max_length=1024, truncation=True, padding=True)
 
-tokenizer.pad_token = tokenizer.eos_token
+#tokenizer.pad_token = tokenizer.eos_token
+tokenizer.pad_token = "[PAD]"
+tokenizer.padding_side = "left"
 
 dataset = create_and_prepare_dataset(tokenizer)
 
@@ -108,9 +110,9 @@ config = PPOConfig(
     model_name=script_args.model_name,
     log_with=script_args.log_with,
     learning_rate=1e-5,
-    batch_size=8,
+    batch_size=4,
     mini_batch_size=1,
-    gradient_accumulation_steps=2,
+    gradient_accumulation_steps=1,
     optimize_cuda_cache=True,
     seed=script_args.seed,
     use_score_scaling=script_args.use_score_scaling,
@@ -128,12 +130,26 @@ ppo_trainer = PPOTrainer(
 )
 
 generation_kwargs = {
+    "top_k": 10,
+    "top_p": 0.9,
+    "do_sample": True,
+    "pad_token_id": tokenizer.pad_token_id,
+    #"max_new_tokens": 500,
+    #'temperature': 0.7,
+    'repetition_penalty': 10.0,
+    #'num_return_sequences': 1,
+    #'eos_token_id': tokenizer.eos_token_id,
+    'max_length': 1000,
+}
+"""
+generation_kwargs = {
     "top_k": 0.0,
     "top_p": 0.9,
     "do_sample": True,
     "pad_token_id": tokenizer.pad_token_id,
-    "max_new_tokens": 32,
+    "max_new_tokens": 800,
 }
+"""
 
 eval_q = 'I liked "Breaking Bad" and "Band of Brothers". Do you have any recommendations of other shows I might like?\n'
 eval_tensor = [torch.Tensor(tokenizer.encode(eval_q)).int()]
@@ -166,19 +182,20 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
         **generation_kwargs,
     )
     batch["response"] = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
-    batch["response"] = [r[:500] for r in batch["response"]]
-    response_tensors = [torch.Tensor(tokenizer.encode(r)).int() for r in batch["response"]]
+    #batch["response"] = [r[:500] for r in batch["response"]]
+    #response_tensors = [torch.Tensor(tokenizer.encode(r)).int() for r in batch["response"]]
     
 
     # Compute reward score
     texts = [q + r for q, r in zip(batch["query"], batch["response"])]
+    #texts = [tokenizer.decode(tokenizer.encode(t)[:1024]) for t in texts]
     """
     inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt").to(ppo_trainer.accelerator.device)
     raw_rewards = ppo_trainer.accelerator.unwrap_model(ppo_trainer.model).compute_reward_score(**inputs)
     rewards = [raw_rewards[i, -1, 1] for i in range(len(raw_rewards))]  # take last token
     """
     #print(texts)
-    pipe_outputs = reward_model(texts, **reward_kwargs)
+    pipe_outputs = reward_model(texts, truncation=True, **reward_kwargs)
     #print(pipe_outputs)
     rewards = [torch.tensor(output[1]["score"]) for output in pipe_outputs]
 

@@ -3,7 +3,8 @@ import transformers
 
 from transformers import LlamaForCausalLM, LlamaTokenizer
 
-model_dir = "/root/llama/llama-2-7b-hf"
+#model_dir = "meta-llama/Llama-2-7b-hf"
+model_dir = "results/checkpoint_36"
 model = LlamaForCausalLM.from_pretrained(model_dir)
 tokenizer = LlamaTokenizer.from_pretrained(model_dir)
 

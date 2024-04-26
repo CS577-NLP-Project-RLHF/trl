@@ -29,7 +29,7 @@ class ScriptArguments:
 
     local_rank: Optional[int] = field(default=-1, metadata={"help": "Used for multi-gpu"})
     resume_from_checkpoint: Optional[bool] = field(
-        default=False,
+        default=True,
         metadata={"help": "If you want to resume training where it left off."},
     )
     deepspeed: Optional[str] = field(
