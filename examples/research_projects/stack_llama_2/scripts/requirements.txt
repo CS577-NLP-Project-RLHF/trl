@@ -5,3 +5,7 @@ accelerate
 datasets==2.18.0
 bitsandbytes
 wandb
+tqdm
+scikit-learn
+rouge
+evaluate

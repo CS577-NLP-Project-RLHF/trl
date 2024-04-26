@@ -38,8 +38,8 @@ class ScriptArguments:
     weight_decay: Optional[float] = field(default=0.05, metadata={"help": "the weight decay"})
     optimizer_type: Optional[str] = field(default="paged_adamw_32bit", metadata={"help": "the optimizer type"})
 
-    per_device_train_batch_size: Optional[int] = field(default=4, metadata={"help": "train batch size per device"})
-    per_device_eval_batch_size: Optional[int] = field(default=1, metadata={"help": "eval batch size per device"})
+    per_device_train_batch_size: Optional[int] = field(default=64, metadata={"help": "train batch size per device"})
+    per_device_eval_batch_size: Optional[int] = field(default=64, metadata={"help": "eval batch size per device"})
     gradient_accumulation_steps: Optional[int] = field(
         default=4, metadata={"help": "the number of gradient accumulation steps"}
     )
@@ -51,9 +51,9 @@ class ScriptArguments:
         default=False, metadata={"help": "whether to use reentrant for gradient checkpointing"}
     )
 
-    lora_alpha: Optional[float] = field(default=16, metadata={"help": "the lora alpha parameter"})
+    lora_alpha: Optional[float] = field(default=32, metadata={"help": "the lora alpha parameter"})
     lora_dropout: Optional[float] = field(default=0.05, metadata={"help": "the lora dropout parameter"})
-    lora_r: Optional[int] = field(default=8, metadata={"help": "the lora r parameter"})
+    lora_r: Optional[int] = field(default=16, metadata={"help": "the lora r parameter"})
 
     max_prompt_length: Optional[int] = field(default=512, metadata={"help": "the maximum prompt length"})
     max_length: Optional[int] = field(default=1024, metadata={"help": "the maximum sequence length"})
@@ -112,7 +112,7 @@ def get_stack_exchange_paired(
     """
     dataset = load_dataset(
         "lvwerra/stack-exchange-paired",
-        split="train",
+        split="train[:1000000]",
         cache_dir=cache_dir,
         data_dir=data_dir,
     )

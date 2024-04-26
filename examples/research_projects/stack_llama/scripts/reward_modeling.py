@@ -99,10 +99,10 @@ parser = HfArgumentParser(ScriptArguments)
 script_args = parser.parse_args_into_dataclasses()[0]
 set_seed(script_args.seed)
 # Load the human stack-exchange-paired dataset for tuning the reward model.
-train_dataset = load_dataset("lvwerra/stack-exchange-paired", data_dir="data/reward", split="train")
+train_dataset = load_dataset("lvwerra/stack-exchange-paired", data_dir="data/reward", split="train[:100000]")
 if script_args.train_subset > 0:
     train_dataset = train_dataset.select(range(script_args.train_subset))
-eval_dataset = load_dataset("lvwerra/stack-exchange-paired", data_dir="data/evaluation", split="train")
+eval_dataset = load_dataset("lvwerra/stack-exchange-paired", data_dir="data/evaluation", split="train[:50000]")
 if script_args.eval_subset > 0:
     eval_dataset = eval_dataset.select(range(script_args.eval_subset))
 # Define the training args. Needs to be done before the model is loaded if you are using deepspeed.
@@ -139,7 +139,7 @@ training_args = TrainingArguments(
 
 # Load the value-head model and tokenizer.
 tokenizer_name = script_args.tokenizer_name if script_args.tokenizer_name is not None else script_args.model_name
-tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_auth_token=True)
+tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_auth_token=False)
 tokenizer.pad_token = tokenizer.eos_token
 
 
@@ -153,7 +153,7 @@ peft_config = LoraConfig(
 
 model = AutoModelForSequenceClassification.from_pretrained(
     script_args.model_name, num_labels=1, torch_dtype=torch.bfloat16
-)
+) #script_args.model_name
 model = get_peft_model(model, peft_config)
 model.print_trainable_parameters()
 
