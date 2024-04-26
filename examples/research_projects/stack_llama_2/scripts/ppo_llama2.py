@@ -18,7 +18,7 @@ import torch
 from datasets import load_dataset
 from peft import LoraConfig
 from tqdm import tqdm
-from transformers import AutoTokenizer, BitsAndBytesConfig, HfArgumentParser, pipeline
+from transformers import AutoTokenizer, BitsAndBytesConfig, HfArgumentParser, pipeline, LlamaForCausalLM, LlamaTokenizer
 
 from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
 from trl.core import LengthSampler
@@ -28,7 +28,7 @@ import os
 from rouge import Rouge 
 
 input_min_text_length = 6
-input_max_text_length = 100
+input_max_text_length = 500
 
 
 @dataclass
@@ -37,7 +37,7 @@ class ScriptArguments:
     The name of the Casual LM model we wish to fine with PPO
     """
 
-    model_name: Optional[str] = field(default='huggyllama/llama-7b', metadata={"help": "the model name"}) # "huggyllama/llama-7b"
+    model_name: Optional[str] = field(default="/root/llama/llama-2-7b-hf", metadata={"help": "the model name"}) # "huggyllama/llama-7b"
     dataset_name: Optional[str] = field(default="lvwerra/stack-exchange-paired", metadata={"help": "the dataset name"}) # "Anthropic/hh-rlhf"
     rm_adapter: Optional[str] = field(
         default="trl-lib/llama-7b-hh-rm-adapter", metadata={"help": "the rm adapter name"}
@@ -58,7 +58,7 @@ script_args = parser.parse_args_into_dataclasses()[0]
 
 
 def create_and_prepare_dataset(tokenizer):
-    dataset = load_dataset(script_args.dataset_name, split="train[:100000]")
+    dataset = load_dataset(script_args.dataset_name, split="train[:1000]")
 
     input_size = LengthSampler(input_min_text_length, input_max_text_length)
 
@@ -75,15 +75,16 @@ def create_and_prepare_dataset(tokenizer):
 
 
 lora_config = LoraConfig(
-    r=32,
-    lora_alpha=64,
-    lora_dropout=0.1,
+    r=16,
+    lora_alpha=32,
+    lora_dropout=0.05,
     bias="none",
     task_type="CAUSAL_LM",
 )
 nf4_config = BitsAndBytesConfig(
     load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16
 )
+
 model = AutoModelForCausalLMWithValueHead.from_pretrained(
     script_args.model_name,
     #device_map={"": "xpu:0"} if is_xpu_available() else {"": "npu:0"} if is_npu_available else {"": 0},
@@ -108,7 +109,7 @@ config = PPOConfig(
     log_with=script_args.log_with,
     learning_rate=1e-5,
     batch_size=8,
-    mini_batch_size=2,
+    mini_batch_size=1,
     gradient_accumulation_steps=2,
     optimize_cuda_cache=True,
     seed=script_args.seed,
@@ -126,12 +127,6 @@ ppo_trainer = PPOTrainer(
     data_collator=collator,
 )
 
-device = ppo_trainer.accelerator.device
-task = 'question-answering'
-model_name = '/root/trl/examples/research_projects/stack_llama/scripts/gpt2_peft_stack-exchange-paired_rmts__100000_2e-05/checkpoint-4500'
-pipe = pipeline(task, model=model_name, device=device)
-
-
 generation_kwargs = {
     "top_k": 0.0,
     "top_p": 0.9,
@@ -141,7 +136,7 @@ generation_kwargs = {
 }
 
 eval_q = 'I liked "Breaking Bad" and "Band of Brothers". Do you have any recommendations of other shows I might like?\n'
-eval_tensor = tokenizer.encode(eval_q)
+eval_tensor = [torch.Tensor(tokenizer.encode(eval_q)).int()]
 eval_ref = """
 Given your interest in "Breaking Bad" and "Band of Brothers," you seem to appreciate intense dramas with deep character development and gripping storylines. Here are a few recommendations that might resonate with you:
 
@@ -156,10 +151,14 @@ These series offer a mix of critical acclaim and strong narrative depth, likely 
 """
 rouge = Rouge()
 
-sent_kwargs = {"return_all_scores": True, "function_to_apply": "none", "batch_size": 16}
+reward_model_name = '/root/trl/examples/research_projects/stack_llama/scripts/gpt2_peft_stack-exchange-paired_rmts__100000_2e-05/checkpoint-4500'
+reward_model = pipeline("text-classification", model=reward_model_name)
+reward_kwargs = {"return_all_scores": True, "function_to_apply": "none"}
+
 
 for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
     question_tensors = batch["input_ids"]
+    #print(len(question_tensors), question_tensors[0].size())
 
     response_tensors = ppo_trainer.generate(
         question_tensors,
@@ -167,31 +166,44 @@ for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
         **generation_kwargs,
     )
     batch["response"] = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
+    batch["response"] = [r[:500] for r in batch["response"]]
+    response_tensors = [torch.Tensor(tokenizer.encode(r)).int() for r in batch["response"]]
     
-    
-    scores = rouge.get_scores(hypothesis, reference)
-    print(scores)
 
     # Compute reward score
-    """
     texts = [q + r for q, r in zip(batch["query"], batch["response"])]
+    """
     inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt").to(ppo_trainer.accelerator.device)
     raw_rewards = ppo_trainer.accelerator.unwrap_model(ppo_trainer.model).compute_reward_score(**inputs)
     rewards = [raw_rewards[i, -1, 1] for i in range(len(raw_rewards))]  # take last token
     """
-    
-    texts = [q + r for q, r in zip(batch["query"], batch["response"])]
-    pipe_outputs = pipe(texts, **sent_kwargs)
+    #print(texts)
+    pipe_outputs = reward_model(texts, **reward_kwargs)
+    #print(pipe_outputs)
     rewards = [torch.tensor(output[1]["score"]) for output in pipe_outputs]
 
     # Run PPO step
     stats = ppo_trainer.step(question_tensors, response_tensors, rewards)
-    ppo_trainer.log_stats(stats, batch, rewards, columns_to_log=["query", "response", "ref_response", "ref_rewards"])
+    ppo_trainer.log_stats(stats, batch, rewards)
     
     print()
     print('Epoch', epoch)
-    #print('ppo/loss/total', stats['ppo/loss/total'])
     print('ppo/loss/value', stats['ppo/loss/value'])
-    #print('ppo/loss/policy', stats['ppo/loss/policy'])
-    ppo_trainer.model.save_pretrained(script_args.output_dir)
+    
+    #print(eval_tensor[0].size())
+    eval_response_tensors = ppo_trainer.generate(
+        eval_tensor,
+        return_prompt=False,
+        **generation_kwargs,
+    )
+    eval_res = tokenizer.batch_decode(eval_response_tensors, skip_special_tokens=True)
+    print(eval_res)
+    scores = rouge.get_scores(eval_res[0], eval_ref)
+    print(scores)
+    
+    
+    output_dir = 'results/checkpoint_'+str(epoch)
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
+    ppo_trainer.model.save_pretrained(output_dir)
     

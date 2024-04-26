@@ -62,7 +62,7 @@ class ScriptArguments:
         },
     )
     num_train_epochs: Optional[int] = field(
-        default=1,
+        default=10,
         metadata={"help": "The number of training epochs for the reward model."},
     )
     train_subset: Optional[int] = field(
@@ -85,7 +85,7 @@ class ScriptArguments:
         default="linear",
         metadata={"help": "The lr scheduler"},
     )
-    max_length: Optional[int] = field(default=512)
+    max_length: Optional[int] = field(default=1000)
     eval_first_step: Optional[bool] = field(
         default=False,
         metadata={"help": "Whether to run eval after the first step"},
