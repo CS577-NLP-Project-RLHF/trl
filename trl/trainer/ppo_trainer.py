@@ -1392,7 +1392,6 @@ class PPOTrainer(BaseTrainer):
                 logs,
                 step=self.current_step if self.config.log_with == "tensorboard" else None,
             )
-            print(logs)
 
     def create_model_card(self, path: str, model_name: Optional[str] = "TRL Model") -> None:
         """Creates and saves a model card for a TRL model.

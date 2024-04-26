@@ -11,166 +11,132 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-python examples/scripts/ppo.py \
-    --log_with=wandb
-"""
 from dataclasses import dataclass, field
 from typing import Optional
 
 import torch
-from accelerate import Accelerator
 from datasets import load_dataset
 from peft import LoraConfig
 from tqdm import tqdm
-from transformers import AutoTokenizer, HfArgumentParser, pipeline
+from transformers import AutoTokenizer, BitsAndBytesConfig, HfArgumentParser, pipeline
 
-from trl import AutoModelForCausalLMWithValueHead, AutoModelForSeq2SeqLMWithValueHead, PPOConfig, PPOTrainer, set_seed
+from trl import AutoModelForCausalLMWithValueHead, PPOConfig, PPOTrainer
 from trl.core import LengthSampler
 from trl.import_utils import is_npu_available, is_xpu_available
 
 import os
+from rouge import Rouge 
 
-tqdm.pandas()
+input_min_text_length = 6
+input_max_text_length = 100
 
 
 @dataclass
 class ScriptArguments:
-    use_seq2seq: bool = field(default=False, metadata={"help": "whether to use seq2seq"})
-    trust_remote_code: bool = field(default=True, metadata={"help": "Enable `trust_remote_code`"})
-
-    # LoraConfig
-    use_peft: bool = field(default=True, metadata={"help": "whether to use peft"})
-    lora_alpha: Optional[float] = field(default=32, metadata={"help": "the lora alpha parameter"})
-    lora_r: Optional[int] = field(default=16, metadata={"help": "the lora r parameter"})
-
-
-parser = HfArgumentParser((ScriptArguments, PPOConfig))
-args, ppo_config = parser.parse_args_into_dataclasses()
-
-# We then define the arguments to pass to the sentiment analysis pipeline.
-# We set `return_all_scores` to True to get the sentiment score for each token.
-sent_kwargs = {"return_all_scores": True, "function_to_apply": "none", "batch_size": 16}
-
-trl_model_class = AutoModelForCausalLMWithValueHead if not args.use_seq2seq else AutoModelForSeq2SeqLMWithValueHead
-
-
-# Below is an example function to build the dataset. In our case, we use the IMDB dataset
-# from the `datasets` library. One should customize this function to train the model on
-# its own dataset.
-def build_dataset(config, query_dataset, input_min_text_length=2, input_max_text_length=100):
     """
-    Build dataset for training. This builds the dataset from `load_dataset`, one should
-    customize this function to train the model on its own dataset.
-
-    Args:
-        query_dataset (`str`):
-            The name of the dataset to be loaded.
-
-    Returns:
-        dataloader (`torch.utils.data.DataLoader`):
-            The dataloader for the dataset.
+    The name of the Casual LM model we wish to fine with PPO
     """
-    tokenizer = AutoTokenizer.from_pretrained('huggyllama/llama-7b')
-    tokenizer.pad_token = tokenizer.eos_token
-    # load imdb with datasets
-    ds = load_dataset(query_dataset, split="train[:100000]")
-    ds = ds.rename_columns({"text": "review"})
-    ds = ds.filter(lambda x: len(x["review"]) > 200, batched=False)
+
+    model_name: Optional[str] = field(default='huggyllama/llama-7b', metadata={"help": "the model name"}) # "huggyllama/llama-7b"
+    dataset_name: Optional[str] = field(default="lvwerra/stack-exchange-paired", metadata={"help": "the dataset name"}) # "Anthropic/hh-rlhf"
+    rm_adapter: Optional[str] = field(
+        default="trl-lib/llama-7b-hh-rm-adapter", metadata={"help": "the rm adapter name"}
+    )
+    log_with: Optional[str] = field(default='wandb', metadata={"help": "use 'wandb' to log with wandb"})
+    use_safetensors: Optional[bool] = field(default=False, metadata={"help": "Use safetensors"})
+    seed: Optional[int] = field(default=0, metadata={"help": "the random seed"})
+    use_score_scaling: Optional[bool] = field(default=False, metadata={"help": "Use score scaling"})
+    use_score_norm: Optional[bool] = field(
+        default=False, metadata={"help": "Use score normalization. Only applicable if use_score_scaling is True"}
+    )
+    score_clip: Optional[float] = field(default=None, metadata={"help": "Score clipping"})
+    output_dir: Optional[str] = field(default="./results", metadata={"help": "the output directory"})
+
+
+parser = HfArgumentParser(ScriptArguments)
+script_args = parser.parse_args_into_dataclasses()[0]
+
+
+def create_and_prepare_dataset(tokenizer):
+    dataset = load_dataset(script_args.dataset_name, split="train[:100000]")
 
     input_size = LengthSampler(input_min_text_length, input_max_text_length)
 
-    def tokenize(sample):
+    def tokenize(example):
         text_size = input_size()
-        prompt = "Question: \n\n" + example["question"] + "\n\nAnswer: "
+        prompt = "Question: " + example["question"] + "\n\nAnswer: "
         example["input_ids"] = tokenizer.encode(prompt)[:text_size]
         example["query"] = tokenizer.decode(example["input_ids"])
-        return sample
+        return example
 
-    ds = ds.map(tokenize, batched=False)
-    ds.set_format(type="torch")
-    return ds
+    dataset = dataset.map(tokenize, batched=False)
+    dataset.set_format("torch")
+    return dataset
 
 
-# We retrieve the dataloader by calling the `build_dataset` function.
-dataset = build_dataset(ppo_config, 'lvwerra/stack-exchange-paired')
+lora_config = LoraConfig(
+    r=32,
+    lora_alpha=64,
+    lora_dropout=0.1,
+    bias="none",
+    task_type="CAUSAL_LM",
+)
+nf4_config = BitsAndBytesConfig(
+    load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16
+)
+model = AutoModelForCausalLMWithValueHead.from_pretrained(
+    script_args.model_name,
+    #device_map={"": "xpu:0"} if is_xpu_available() else {"": "npu:0"} if is_npu_available else {"": 0},
+    peft_config=lora_config,
+    quantization_config=nf4_config,
+    #reward_adapter=script_args.rm_adapter,
+    use_safetensors=script_args.use_safetensors,
+)
+tokenizer = AutoTokenizer.from_pretrained(script_args.model_name)
+
+tokenizer.pad_token = tokenizer.eos_token
+
+dataset = create_and_prepare_dataset(tokenizer)
 
 
 def collator(data):
     return {key: [d[key] for d in data] for key in data[0]}
 
 
-# set seed before initializing value head for deterministic eval
-set_seed(ppo_config.seed)
-
-# Now let's build the model, the reference model, and the tokenizer.
-if not args.use_peft:
-    ref_model = trl_model_class.from_pretrained('huggyllama/llama-7b', trust_remote_code=args.trust_remote_code)
-    device_map = None
-    peft_config = None
-else:
-    peft_config = LoraConfig(
-        r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
-    ref_model = None
-    # Copy the model to each device
-    device_map = {"": Accelerator().local_process_index}
-
-model = trl_model_class.from_pretrained(
-    'huggyllama/llama-7b',
-    trust_remote_code=args.trust_remote_code,
-    device_map=device_map,
-    peft_config=peft_config,
+config = PPOConfig(
+    model_name=script_args.model_name,
+    log_with=script_args.log_with,
+    learning_rate=1e-5,
+    batch_size=8,
+    mini_batch_size=2,
+    gradient_accumulation_steps=2,
+    optimize_cuda_cache=True,
+    seed=script_args.seed,
+    use_score_scaling=script_args.use_score_scaling,
+    use_score_norm=script_args.use_score_norm,
+    score_clip=script_args.score_clip,
 )
 
+ppo_trainer = PPOTrainer(
+    config,
+    model,
+    ref_model=None,
+    tokenizer=tokenizer,
+    dataset=dataset,
+    data_collator=collator,
+)
 
-tokenizer = AutoTokenizer.from_pretrained('huggyllama/llama-7b')
-
-# Some tokenizers like GPT-2's don't have a padding token by default, so we set one here.
-tokenizer.pad_token_id = tokenizer.eos_token_id
-
-# We then build the PPOTrainer, passing the model, the reference model, the tokenizer
-ppo_trainer = PPOTrainer(ppo_config, model, ref_model, tokenizer, dataset=dataset, data_collator=collator)
-
-# We then build the sentiment analysis pipeline, passing the model name and the
-# sentiment analysis pipeline arguments. Let's also make sure to set the device
-# to the same device as the PPOTrainer.
 device = ppo_trainer.accelerator.device
-if ppo_trainer.accelerator.num_processes == 1:
-    if is_xpu_available():
-        device = "xpu:0"
-    elif is_npu_available():
-        device = "npu:0"
-    else:
-        device = 0 if torch.cuda.is_available() else "cpu"  # to avoid a `pipeline` bug
-ds_plugin = ppo_trainer.accelerator.state.deepspeed_plugin
 task = 'question-answering'
-model_name = '/root/trl/examples/research_projects/stack_llama/scripts/gpt2_peft_stack-exchange-paired_rmts__10000_2e-05_peft_last_checkpoint'
-if ds_plugin is not None and ds_plugin.is_zero3_init_enabled():
-    with ds_plugin.zero3_init_context_manager(enable=False):
-        sentiment_pipe = pipeline(task, model=model_name, device=device)
-else:
-    sentiment_pipe = pipeline(task, model=model_name, device=device)
+model_name = '/root/trl/examples/research_projects/stack_llama/scripts/gpt2_peft_stack-exchange-paired_rmts__100000_2e-05/checkpoint-4500'
+pipe = pipeline(task, model=model_name, device=device)
 
-# Some tokenizers like GPT-2's don't have a padding token by default, so we set one here.
-if sentiment_pipe.tokenizer.pad_token_id is None:
-    sentiment_pipe.tokenizer.pad_token_id = tokenizer.pad_token_id
 
-if sentiment_pipe.model.config.pad_token_id is None:
-    sentiment_pipe.model.config.pad_token_id = tokenizer.pad_token_id
-
-# We then define the arguments to pass to the `generate` function. These arguments
-# are passed to the `generate` function of the PPOTrainer, which is a wrapper around
-# the `generate` function of the trained model.
 generation_kwargs = {
-    "min_length": -1,
     "top_k": 0.0,
-    "top_p": 1.0,
+    "top_p": 0.9,
     "do_sample": True,
-    "pad_token_id": tokenizer.eos_token_id,
+    "pad_token_id": tokenizer.pad_token_id,
     "max_new_tokens": 32,
 }
 
@@ -186,42 +152,46 @@ Fargo – Inspired by the original Coen Brothers film, this anthology series cap
 Band of Gold – If you liked "Band of Brothers," you might also enjoy "Band of Gold," a British television drama series about the lives of a group of women who turn to prostitution to survive.
 Generation Kill – From the creators of "The Wire," this miniseries follows the early phase of the Iraq War, depicting the lives of Marines in the 1st Reconnaissance Battalion. Like "Band of Brothers," it provides a gritty, realistic portrayal of soldiers in conflict.
 These series offer a mix of critical acclaim and strong narrative depth, likely to satisfy your tastes based on your previous favorites.
+
 """
 rouge = Rouge()
 
-for _epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
-    query_tensors = batch["input_ids"]
+sent_kwargs = {"return_all_scores": True, "function_to_apply": "none", "batch_size": 16}
 
-    # Get response from gpt2
-    response_tensors, ref_response_tensors = ppo_trainer.generate(
-        query_tensors, return_prompt=False, generate_ref_response=True, **generation_kwargs
+for epoch, batch in tqdm(enumerate(ppo_trainer.dataloader)):
+    question_tensors = batch["input_ids"]
+
+    response_tensors = ppo_trainer.generate(
+        question_tensors,
+        return_prompt=False,
+        **generation_kwargs,
     )
-    batch["response"] = tokenizer.batch_decode(response_tensors)
-    batch["ref_response"] = tokenizer.batch_decode(ref_response_tensors)
+    batch["response"] = tokenizer.batch_decode(response_tensors, skip_special_tokens=True)
     
     
+    scores = rouge.get_scores(hypothesis, reference)
+    print(scores)
 
-    # Compute sentiment score
+    # Compute reward score
+    """
     texts = [q + r for q, r in zip(batch["query"], batch["response"])]
-    pipe_outputs = sentiment_pipe(texts, **sent_kwargs)
+    inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt").to(ppo_trainer.accelerator.device)
+    raw_rewards = ppo_trainer.accelerator.unwrap_model(ppo_trainer.model).compute_reward_score(**inputs)
+    rewards = [raw_rewards[i, -1, 1] for i in range(len(raw_rewards))]  # take last token
+    """
+    
+    texts = [q + r for q, r in zip(batch["query"], batch["response"])]
+    pipe_outputs = pipe(texts, **sent_kwargs)
     rewards = [torch.tensor(output[1]["score"]) for output in pipe_outputs]
-    ref_texts = [q + r for q, r in zip(batch["query"], batch["ref_response"])]
-    ref_pipe_outputs = sentiment_pipe(ref_texts, **sent_kwargs)
-    ref_rewards = [torch.tensor(output[1]["score"]) for output in ref_pipe_outputs]
-    batch["ref_rewards"] = ref_rewards
 
     # Run PPO step
-    stats = ppo_trainer.step(query_tensors, response_tensors, rewards)
+    stats = ppo_trainer.step(question_tensors, response_tensors, rewards)
     ppo_trainer.log_stats(stats, batch, rewards, columns_to_log=["query", "response", "ref_response", "ref_rewards"])
-    
     
     print()
     print('Epoch', epoch)
+    #print('ppo/loss/total', stats['ppo/loss/total'])
     print('ppo/loss/value', stats['ppo/loss/value'])
-    scores = rouge.get_scores(batch["response"], eval_ref)
-    print(scores)
+    #print('ppo/loss/policy', stats['ppo/loss/policy'])
+    ppo_trainer.model.save_pretrained(script_args.output_dir)
     
-    output_dir = './results/epoch_'+str(epoch)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    ppo_trainer.model.save_pretrained(output_dir)
