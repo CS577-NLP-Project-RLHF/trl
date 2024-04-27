@@ -37,11 +37,8 @@ class ScriptArguments:
     The name of the Casual LM model we wish to fine with PPO
     """
 
-    model_name: Optional[str] = field(default="meta-llama/Llama-2-7b-hf", metadata={"help": "the model name"}) # "huggyllama/llama-7b" "/root/llama/llama-2-7b-hf"
+    model_name: Optional[str] = field(default="meta-llama/Llama-2-7b-chat-hf", metadata={"help": "the model name"}) # "huggyllama/llama-7b" "/root/llama/llama-2-7b-hf"
     dataset_name: Optional[str] = field(default="lvwerra/stack-exchange-paired", metadata={"help": "the dataset name"}) # "Anthropic/hh-rlhf"
-    rm_adapter: Optional[str] = field(
-        default="trl-lib/llama-7b-hh-rm-adapter", metadata={"help": "the rm adapter name"}
-    )
     log_with: Optional[str] = field(default='wandb', metadata={"help": "use 'wandb' to log with wandb"})
     use_safetensors: Optional[bool] = field(default=False, metadata={"help": "Use safetensors"})
     seed: Optional[int] = field(default=0, metadata={"help": "the random seed"})
@@ -93,9 +90,9 @@ model = AutoModelForCausalLMWithValueHead.from_pretrained(
     #reward_adapter=script_args.rm_adapter,
     use_safetensors=script_args.use_safetensors,
 )
-tokenizer = AutoTokenizer.from_pretrained(script_args.model_name, model_max_length=1024, max_length=1024, truncation=True, padding=True)
+model = model.bfloat16().cuda()
 
-#tokenizer.pad_token = tokenizer.eos_token
+tokenizer = AutoTokenizer.from_pretrained(script_args.model_name, model_max_length=1024, max_length=1024, truncation=True, padding=True)
 tokenizer.pad_token = "[PAD]"
 tokenizer.padding_side = "left"
 
@@ -136,7 +133,7 @@ generation_kwargs = {
     "pad_token_id": tokenizer.pad_token_id,
     #"max_new_tokens": 500,
     #'temperature': 0.7,
-    'repetition_penalty': 10.0,
+    #'repetition_penalty': 10.0,
     #'num_return_sequences': 1,
     #'eos_token_id': tokenizer.eos_token_id,
     'max_length': 1000,
@@ -167,7 +164,7 @@ These series offer a mix of critical acclaim and strong narrative depth, likely 
 """
 rouge = Rouge()
 
-reward_model_name = '/root/trl/examples/research_projects/stack_llama/scripts/gpt2_peft_stack-exchange-paired_rmts__100000_2e-05/checkpoint-4500'
+reward_model_name = '/root/trl/examples/research_projects/stack_llama/scripts/gpt2_peft_stack-exchange-paired_rmts__100000_2e-05/checkpoint-32000'
 reward_model = pipeline("text-classification", model=reward_model_name)
 reward_kwargs = {"return_all_scores": True, "function_to_apply": "none"}
 
